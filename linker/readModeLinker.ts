@@ -85,6 +85,7 @@ export class GlossaryLinker extends MarkdownRenderChild {
                         let matches: VirtualMatch[] = [];
 
                         let id = 0;
+                        let prevChar: string | undefined = undefined;
 
                         // Iterate over every char in the text
                         for (let i = 0; i <= text.length; i) {
@@ -93,7 +94,7 @@ export class GlossaryLinker extends MarkdownRenderChild {
                             const char = i < text.length ? String.fromCodePoint(codePoint) : '\n';
 
                             // If we are at a word boundary, get the current fitting files
-                            const isWordBoundary = PrefixTree.checkWordBoundary(char); // , this.settings.wordBoundaryRegex
+                            const isWordBoundary = PrefixTree.checkWordBoundary(char, prevChar); // , this.settings.wordBoundaryRegex
                             if (this.settings.matchAnyPartsOfWords || this.settings.matchBeginningOfWords || isWordBoundary) {
                                 const currentNodes = this.linkerCache.cache.getCurrentMatchNodes(i);
                                 if (currentNodes.length > 0) {
@@ -132,7 +133,8 @@ export class GlossaryLinker extends MarkdownRenderChild {
                             }
 
                             // Push the char to get the next nodes in the prefix tree
-                            this.linkerCache.cache.pushChar(char);
+                            this.linkerCache.cache.pushChar(char, prevChar);
+                            prevChar = char;
                             i += char.length;
                         }
 

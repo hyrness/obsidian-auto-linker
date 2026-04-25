@@ -395,14 +395,14 @@ export class PrefixTree {
         this._currentNodes = [new VisitedPrefixNode(this.root)];
     }
 
-    pushChar(char: string) {
+    pushChar(char: string, prevChar?: string) {
         const newNodes: VisitedPrefixNode[] = [];
         const chars = [char];
         chars.push(char.toLowerCase());
 
         chars.forEach((c) => {
             // char = char.toLowerCase();
-            const isBoundary = PrefixTree.checkWordBoundary(c);
+            const isBoundary = PrefixTree.checkWordBoundary(c, prevChar);
             if (this.settings.matchAnyPartsOfWords || isBoundary || this.settings.matchEndOfWords) {
                 // , this.settings.wordBoundaryRegex
                 newNodes.push(new VisitedPrefixNode(this.root, true, isBoundary));
@@ -436,44 +436,37 @@ export class PrefixTree {
         this._currentNodes = newNodes;
     }
 
-    static checkWordBoundary(char: string): boolean {
-        // , regexString: string
-        // const pattern = /[\/\n\t\r\s,.!?:"`´()\[\]'{}|~\p{Emoji_Presentation}\p{Extended_Pictographic}]/u;
+    // Script patterns used for detecting script transitions (e.g. Latin→Hiragana).
+    // A transition between two different scripts counts as a word boundary even when
+    // both characters are letters — this lets Japanese/CJK notes match in continuous
+    // text that has no spaces between words.
+    private static readonly SCRIPT_PATTERNS: RegExp[] = [
+        /\p{Script=Latin}/u,
+        /\p{Script=Han}/u,
+        /\p{Script=Hiragana}/u,
+        /\p{Script=Katakana}/u,
+        /\p{Script=Greek}/u,
+        /\p{Script=Cyrillic}/u,
+        /\p{Script=Arabic}/u,
+        /\p{Script=Hebrew}/u,
+        /\p{Script=Hangul}/u,
+    ];
 
-        // let pattern = /[\t- !-/:-@\[-`{-~\p{Emoji_Presentation}\p{Extended_Pictographic}]/u;
+    private static getScript(char: string): number {
+        for (let i = 0; i < PrefixTree.SCRIPT_PATTERNS.length; i++) {
+            if (PrefixTree.SCRIPT_PATTERNS[i].test(char)) return i;
+        }
+        return -1;
+    }
 
-        // \p{L}: Any kind of letter from any language.
-        // \p{Ll}: Lowercase letter.
-        // \p{Lu}: Uppercase letter.
-        // \p{M}: Mark (accents, combining marks).
-        // \p{N}: Number (digit, letter-like number).
-        // \p{P}: Punctuation.
-        // \p{S}: Symbol (currency, math symbols, etc.).
-        // \p{Z}: Separator (space, line breaks).
-        // \p{C}: Other (control chars, unassigned, etc.).
-
-        // let pattern = /[\p{P}\p{Z}\p{S}\p{C}\p{Emoji_Presentation}\p{Extended_Pictographic}]/u;
-        let pattern = /[^\p{L}]/u;
-
-        // if (regexString) {
-        //     if (typeof regexString !== 'string') {
-        //         regexString = regexString.toString();
-
-        //     }
-        //     if (!regexString.startsWith('/')) {
-        //         regexString = '/' + regexString;
-        //     }
-        //     if (!regexString.endsWith('/')) {
-        //         regexString = regexString + '/';
-        //     }
-        //     const parts = regexString.match(/\/(.*)\/([a-z]*)\/?/);
-        //     if (!parts) {
-        //         throw new Error('Invalid regex: ' + regexString);
-        //     }
-        //     pattern = new RegExp(parts[1], parts[2]);
-        // }
-        // console.log('Checking word boundary', char, pattern);
-        return pattern.test(char);
+    static checkWordBoundary(char: string, prevChar?: string): boolean {
+        if (/[^\p{L}\p{N}_]/u.test(char)) return true;
+        if (prevChar !== undefined) {
+            const cs = PrefixTree.getScript(char);
+            const ps = PrefixTree.getScript(prevChar);
+            if (cs !== -1 && ps !== -1 && cs !== ps) return true;
+        }
+        return false;
     }
 
     static isFormattingChar(char: string): boolean {
