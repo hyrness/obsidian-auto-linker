@@ -148,7 +148,7 @@ class AutoLinkerPlugin implements PluginValue {
                             // Check if we want to include this note based on the settings
                             if (!this.settings.matchAnyPartsOfWords) {
                                 if (
-                                    (this.settings.matchBeginningOfWords && !node.startsAtWordBoundary) &&
+                                    (this.settings.matchBeginningOfWords && !node.startsAtWordBoundary) ||
                                     (this.settings.matchEndOfWords && !isWordBoundary)
                                 ) {
                                     continue;

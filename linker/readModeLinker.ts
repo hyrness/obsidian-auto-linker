@@ -101,10 +101,8 @@ export class GlossaryLinker extends MarkdownRenderChild {
                                         // Check if we want to include this note based on the settings
                                         if (!this.settings.matchAnyPartsOfWords) {
                                             if (
-                                                this.settings.matchBeginningOfWords &&
-                                                !node.startsAtWordBoundary &&
-                                                this.settings.matchEndOfWords &&
-                                                !isWordBoundary
+                                                (this.settings.matchBeginningOfWords && !node.startsAtWordBoundary) ||
+                                                (this.settings.matchEndOfWords && !isWordBoundary)
                                             ) {
                                                 return;
                                             }
