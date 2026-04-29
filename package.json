@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-glossary",
+	"name": "obsidian-auto-real-linker",
 	"version": "1.5.4",
-	"description": "This plugin automatically links words in your text that occur in a glossary folder created by you.",
+	"description": "Obsidian plugin that automatically inserts real wiki/markdown links for text matching note titles or aliases (debounced, IME-safe).",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

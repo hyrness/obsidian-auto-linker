@@ -7,6 +7,14 @@ import IntervalTree from '@flatten-js/interval-tree';
 import { LinkerPluginSettings } from 'main';
 import { ExternalUpdateManager, LinkerCache, PrefixTree } from './linkerCache';
 import { VirtualMatch } from './virtualLinkDom';
+import { buildRealLinkReplacement } from './linkerInfo';
+
+interface AutoLinkCandidate {
+    from: number;
+    to: number;
+    file: TFile;
+    displayText: string;
+}
 
 function isDescendant(parent: HTMLElement, child: HTMLElement, maxDepth: number = 10) {
     let node = child.parentNode;
@@ -41,6 +49,12 @@ class AutoLinkerPlugin implements PluginValue {
     private lastCursorPos: number = 0;
     private lastActiveFile: string = '';
     private lastViewUpdate: ViewUpdate | null = null;
+
+    // Buffered candidates for the auto-link-on-edit feature.
+    // Populated during buildDecorations, consumed by the debounced flushAutoLinks.
+    private autoLinkCandidates: AutoLinkCandidate[] = [];
+    private autoLinkTimer: number | null = null;
+    private autoLinkActiveFilePath: string = '';
 
     viewUpdateDomToFileMap: Map<HTMLElement, TFile | undefined | null> = new Map();
 
@@ -84,25 +98,109 @@ class AutoLinkerPlugin implements PluginValue {
         const cursorPos = update.view.state.selection.main.from;
         const activeFile = this.app.workspace.getActiveFile()?.path;
         const fileChanged = activeFile != this.lastActiveFile;
+        const cursorMoved = this.lastCursorPos !== cursorPos;
 
-        if (force || this.lastCursorPos != cursorPos || update.docChanged || fileChanged || update.viewportChanged) {
+        if (force || cursorMoved || update.docChanged || fileChanged || update.viewportChanged) {
             this.lastCursorPos = cursorPos;
             this.linkerCache.updateCache(force);
             this.decorations = this.buildDecorations(update.view, updateIsOnActiveView);
             this.lastActiveFile = activeFile ?? '';
+            this.autoLinkActiveFilePath = activeFile ?? '';
         }
 
         this.lastViewUpdate = update;
+
+        // Schedule a debounced auto-link pass for any meaningful change:
+        //   - doc edits
+        //   - opening/switching to a new file
+        //   - cursor moves (so a match that was skipped because it was on the
+        //     current line gets converted once the cursor leaves)
+        if (
+            this.settings.linkerActivated &&
+            this.settings.autoLinkOnEdit &&
+            updateIsOnActiveView &&
+            (update.docChanged || fileChanged || cursorMoved)
+        ) {
+            this.scheduleAutoLink(update.view);
+        }
     }
 
-    destroy() {}
+    destroy() {
+        if (this.autoLinkTimer !== null) {
+            window.clearTimeout(this.autoLinkTimer);
+            this.autoLinkTimer = null;
+        }
+    }
+
+    private scheduleAutoLink(view: EditorView) {
+        if (this.autoLinkTimer !== null) {
+            window.clearTimeout(this.autoLinkTimer);
+        }
+        const delay = Math.max(100, this.settings.autoLinkDebounceMs ?? 800);
+        this.autoLinkTimer = window.setTimeout(() => {
+            this.autoLinkTimer = null;
+            this.flushAutoLinks(view);
+        }, delay);
+    }
+
+    private flushAutoLinks(view: EditorView) {
+        if (!this.settings.linkerActivated || !this.settings.autoLinkOnEdit) return;
+        if (this.autoLinkCandidates.length === 0) return;
+
+        const docLength = view.state.doc.length;
+
+        // Sort by start so we can skip overlaps and apply changes in order.
+        const sorted = [...this.autoLinkCandidates].sort((a, b) => a.from - b.from || b.to - a.to);
+
+        const changes: { from: number; to: number; insert: string }[] = [];
+        let lastTo = -1;
+        for (const cand of sorted) {
+            if (cand.from < lastTo) continue; // overlap with a previously chosen replacement
+            if (cand.to > docLength) continue; // doc shrank under us
+
+            // Verify the text at [from, to] still matches what we captured.
+            // The doc may have changed during the debounce window.
+            const currentText = view.state.doc.sliceString(cand.from, cand.to);
+            if (currentText !== cand.displayText) continue;
+
+            const replacement = buildRealLinkReplacement(
+                this.app,
+                this.settings,
+                cand.file,
+                cand.displayText,
+                this.autoLinkActiveFilePath,
+            );
+            if (!replacement) continue;
+
+            changes.push({ from: cand.from, to: cand.to, insert: replacement });
+            lastTo = cand.to;
+        }
+
+        // Clear the buffer regardless; the next buildDecorations pass will repopulate it.
+        this.autoLinkCandidates = [];
+
+        if (changes.length === 0) return;
+
+        view.dispatch({
+            changes,
+            // Keep the user's selection where it is (CodeMirror auto-maps positions through changes).
+            // No userEvent name, so this still creates an undo entry the user can revert.
+        });
+    }
 
     buildDecorations(view: EditorView, viewIsActive: boolean = true): DecorationSet {
         const builder = new RangeSetBuilder<Decoration>();
+        // Reset the auto-link buffer; we re-collect on every pass.
+        this.autoLinkCandidates = [];
 
         if (!this.settings.linkerActivated) {
             return builder.finish();
         }
+
+        // Lowercased blocklist for O(1) per-match filtering. Empty when unset.
+        const excludedWordsSet = new Set(
+            (this.settings.excludedWords ?? []).map((w) => w.toLowerCase())
+        );
 
         const dom = view.dom;
         const mappedFile = this.viewUpdateDomToFileMap.get(dom);
@@ -297,14 +395,25 @@ class AutoLinkerPlugin implements PluginValue {
                 }
 
                 if (!cursorNearby && !needImeFix && !(excludeLine && additionIsInCurrentLine)) {
-                    builder.add(
-                        from,
-                        to,
-                        Decoration.replace({
-                            // widget: addition.widget,
-                            widget: new VirtualLinkWidget(addition),
-                        })
-                    );
+                    // Virtual-link rendering is intentionally disabled:
+                    // matches are converted to real links on the next debounced flush.
+                    // We only require that the cursor is NOT inside the match
+                    // (cursorNearby check above) — same-line matches past the cursor
+                    // are eligible. This makes auto-linking feel responsive while
+                    // typing without disturbing the area the IME is composing in.
+                    if (
+                        viewIsActive &&
+                        this.settings.autoLinkOnEdit &&
+                        addition.files.length === 1 &&
+                        !excludedWordsSet.has(addition.originText.toLowerCase())
+                    ) {
+                        this.autoLinkCandidates.push({
+                            from,
+                            to,
+                            file: addition.files[0],
+                            displayText: addition.originText,
+                        });
+                    }
                 }
             });
         }

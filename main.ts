@@ -1,11 +1,8 @@
 import { App, EditorPosition, MarkdownView, Menu, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder } from 'obsidian';
 
-import { GlossaryLinker } from './linker/readModeLinker';
 import { liveLinkerPlugin } from './linker/liveLinker';
 import { ExternalUpdateManager, LinkerCache } from 'linker/linkerCache';
-import { LinkerMetaInfoFetcher } from 'linker/linkerInfo';
-
-import * as path from 'path';
+import { buildRealLinkReplacement, LinkerMetaInfoFetcher } from 'linker/linkerInfo';
 
 export interface LinkerPluginSettings {
     advancedSettings: boolean;
@@ -43,6 +40,12 @@ export interface LinkerPluginSettings {
     includeAliases: boolean;
     minimumLinkLength: number;
     alwaysShowMultipleReferences: boolean;
+    autoLinkOnEdit: boolean;
+    autoLinkDebounceMs: number;
+    /** Vault-relative path to a markdown file containing words to exclude from auto-linking, one per line. */
+    excludedWordsFile: string;
+    /** Cached, derived from excludedWordsFile. Re-loaded on plugin load and on file modify. */
+    excludedWords: string[];
     // wordBoundaryRegex: string;
     // conversionFormat
 }
@@ -68,7 +71,8 @@ const DEFAULT_SETTINGS: LinkerPluginSettings = {
     applyDefaultLinkStyling: true,
     includeHeaders: true,
     matchCaseSensitive: false,
-    capitalLetterProportionForAutomaticMatchCase: 0.75,
+    // > 1.0 disables auto-case-sensitivity entirely (all names match case-insensitively).
+    capitalLetterProportionForAutomaticMatchCase: 1.01,
     tagToIgnoreCase: 'linker-ignore-case',
     tagToMatchCase: 'linker-match-case',
     propertyNameToMatchCase: 'linker-match-case',
@@ -78,11 +82,17 @@ const DEFAULT_SETTINGS: LinkerPluginSettings = {
     excludeLinksToOwnNote: true,
     fixIMEProblem: false,
     excludeLinksInCurrentLine: false,
-    onlyLinkOnce: true,
-    excludeLinksToRealLinkedFiles: true,
+    onlyLinkOnce: false,
+    // Keep linking even if the file is already linked elsewhere in the note —
+    // otherwise only the first occurrence becomes a real link.
+    excludeLinksToRealLinkedFiles: false,
     includeAliases: true,
     minimumLinkLength: 2,
     alwaysShowMultipleReferences: false,
+    autoLinkOnEdit: true,
+    autoLinkDebounceMs: 300,
+    excludedWordsFile: 'linker-exclude.md',
+    excludedWords: [],
     // wordBoundaryRegex: '/[\t- !-/:-@\[-`{-~\p{Emoji_Presentation}\p{Extended_Pictographic}]/u',
 };
 
@@ -98,13 +108,47 @@ export default class LinkerPlugin extends Plugin {
             LinkerCache.getInstance(this.app, this.settings).clearCache();
         });
 
-        // Register the glossary linker for the read mode
-        this.registerMarkdownPostProcessor((element, context) => {
-            context.addChild(new GlossaryLinker(this.app, this.settings, context, element));
+        // Register the live linker for the live edit mode.
+        // (Virtual link rendering is disabled; this extension only collects auto-link
+        // candidates and converts them to real links on a debounce.)
+        this.registerEditorExtension(liveLinkerPlugin(this.app, this.settings, this.updateManager));
+
+        // Load the excluded-words file once layout is ready (the metadata cache
+        // is needed to resolve the file path correctly).
+        this.app.workspace.onLayoutReady(() => {
+            this.reloadExcludedWords();
         });
 
-        // Register the live linker for the live edit mode
-        this.registerEditorExtension(liveLinkerPlugin(this.app, this.settings, this.updateManager));
+        // Re-parse the excluded-words file whenever it changes (also handle
+        // creation/rename/deletion so the user can manage the file naturally).
+        this.registerEvent(
+            this.app.vault.on('modify', (file) => {
+                if (file instanceof TFile && file.path === this.settings.excludedWordsFile) {
+                    this.reloadExcludedWords();
+                }
+            }),
+        );
+        this.registerEvent(
+            this.app.vault.on('create', (file) => {
+                if (file instanceof TFile && file.path === this.settings.excludedWordsFile) {
+                    this.reloadExcludedWords();
+                }
+            }),
+        );
+        this.registerEvent(
+            this.app.vault.on('delete', (file) => {
+                if (file instanceof TFile && file.path === this.settings.excludedWordsFile) {
+                    this.reloadExcludedWords();
+                }
+            }),
+        );
+        this.registerEvent(
+            this.app.vault.on('rename', (file, oldPath) => {
+                if (oldPath === this.settings.excludedWordsFile || (file instanceof TFile && file.path === this.settings.excludedWordsFile)) {
+                    this.reloadExcludedWords();
+                }
+            }),
+        );
 
         // This adds a settings tab so the user can configure various aspects of the plugin
         this.addSettingTab(new LinkerSettingTab(this.app, this));
@@ -192,53 +236,19 @@ export default class LinkerPlugin extends Plugin {
                     const targetFile = this.app.vault.getAbstractFileByPath(link.href);
                     if (!(targetFile instanceof TFile)) continue;
 
-                    const activeFile = this.app.workspace.getActiveFile();
-                    const activeFilePath = activeFile?.path ?? '';
-
-                    let absolutePath = targetFile.path;
-                    let relativePath = path.relative(
-                        path.dirname(activeFilePath),
-                        path.dirname(absolutePath)
-                    ) + '/' + path.basename(absolutePath);
-                    relativePath = relativePath.replace(/\\/g, '/');
-
-                    const replacementPath = this.app.metadataCache.fileToLinktext(targetFile, activeFilePath);
-                    const lastPart = replacementPath.split('/').pop()!;
-                    const shortestFile = this.app.metadataCache.getFirstLinkpathDest(lastPart!, '');
-                    let shortestPath = shortestFile?.path === targetFile.path ? lastPart : absolutePath;
-
-                    // Remove .md extension if needed
-                    if (!replacementPath.endsWith('.md')) {
-                        if (absolutePath.endsWith('.md')) absolutePath = absolutePath.slice(0, -3);
-                        if (shortestPath.endsWith('.md')) shortestPath = shortestPath.slice(0, -3);
-                        if (relativePath.endsWith('.md')) relativePath = relativePath.slice(0, -3);
-                    }
-
-                    const useMarkdownLinks = this.settings.useDefaultLinkStyleForConversion
-                        ? this.settings.defaultUseMarkdownLinks
-                        : this.settings.useMarkdownLinks;
-
-                    const linkFormat = this.settings.useDefaultLinkStyleForConversion
-                        ? this.settings.defaultLinkFormat
-                        : this.settings.linkFormat;
-
-                    let replacement = '';
-                    if (replacementPath === link.text && linkFormat === 'shortest') {
-                        replacement = `[[${replacementPath}]]`;
-                    } else {
-                        const path = linkFormat === 'shortest' ? shortestPath :
-                                   linkFormat === 'relative' ? relativePath :
-                                   absolutePath;
-
-                        replacement = useMarkdownLinks ?
-                            `[${link.text}](${path})` :
-                            `[[${path}|${link.text}]]`;
-                    }
+                    const activeFilePath = this.app.workspace.getActiveFile()?.path ?? '';
+                    const replacement = buildRealLinkReplacement(
+                        this.app,
+                        this.settings,
+                        targetFile,
+                        link.text,
+                        activeFilePath,
+                    );
 
                     replacements.push({
                         from: link.from,
                         to: link.to,
-                        text: replacement
+                        text: replacement,
                     });
                 }
 
@@ -331,78 +341,20 @@ export default class LinkerPlugin extends Plugin {
 
                                 // Get the shown text
                                 const text = targetElement.getAttribute('origin-text') || '';
-                                const target = file;
                                 const activeFile = app.workspace.getActiveFile();
-                                const activeFilePath = activeFile?.path ?? '';
 
                                 if (!activeFile) {
                                     console.error('No active file');
                                     return;
                                 }
 
-                                let absolutePath = target.path;
-                                let relativePath =
-                                    path.relative(path.dirname(activeFile.path), path.dirname(absolutePath)) +
-                                    '/' +
-                                    path.basename(absolutePath);
-                                relativePath = relativePath.replace(/\\/g, '/'); // Replace backslashes with forward slashes
-
-                                // Problem: we cannot just take the fileToLinktext result, as it depends on the app settings
-                                const replacementPath = app.metadataCache.fileToLinktext(target as TFile, activeFilePath);
-
-                                // The last part of the replacement path is the real shortest file name
-                                // We have to check, if it leads to the correct file
-                                const lastPart = replacementPath.split('/').pop()!;
-                                const shortestFile = app.metadataCache.getFirstLinkpathDest(lastPart!, '');
-                                // let shortestPath = shortestFile?.path == target.path ? lastPart : replacementPath;
-                                let shortestPath = shortestFile?.path == target.path ? lastPart : absolutePath;
-
-                                // Remove superfluous .md extension
-                                if (!replacementPath.endsWith('.md')) {
-                                    if (absolutePath.endsWith('.md')) {
-                                        absolutePath = absolutePath.slice(0, -3);
-                                    }
-                                    if (shortestPath.endsWith('.md')) {
-                                        shortestPath = shortestPath.slice(0, -3);
-                                    }
-                                    if (relativePath.endsWith('.md')) {
-                                        relativePath = relativePath.slice(0, -3);
-                                    }
-                                }
-
-                                const useMarkdownLinks = settings.useDefaultLinkStyleForConversion
-                                    ? settings.defaultUseMarkdownLinks
-                                    : settings.useMarkdownLinks;
-
-                                const linkFormat = settings.useDefaultLinkStyleForConversion
-                                    ? settings.defaultLinkFormat
-                                    : settings.linkFormat;
-
-                                const createLink = (replacementPath: string, text: string, markdownStyle: boolean) => {
-                                    if (markdownStyle) {
-                                        return `[${text}](${replacementPath})`;
-                                    } else {
-                                        return `[[${replacementPath}|${text}]]`;
-                                    }
-                                };
-
-                                // Create the replacement
-                                let replacement = '';
-
-                                // If the file is the same as the shown text, and we can use short links, we use them
-                                if (replacementPath === text && linkFormat === 'shortest') {
-                                    replacement = `[[${replacementPath}]]`;
-                                }
-                                // Otherwise create a specific link, using the shown text
-                                else {
-                                    if (linkFormat === 'shortest') {
-                                        replacement = createLink(shortestPath, text, useMarkdownLinks);
-                                    } else if (linkFormat === 'relative') {
-                                        replacement = createLink(relativePath, text, useMarkdownLinks);
-                                    } else if (linkFormat === 'absolute') {
-                                        replacement = createLink(absolutePath, text, useMarkdownLinks);
-                                    }
-                                }
+                                const replacement = buildRealLinkReplacement(
+                                    app,
+                                    settings,
+                                    file as TFile,
+                                    text,
+                                    activeFile.path,
+                                );
 
                                 // Replace the text
                                 const editor = app.workspace.getActiveViewOfType(MarkdownView)?.editor;
@@ -593,6 +545,60 @@ export default class LinkerPlugin extends Plugin {
 
     onunload() {}
 
+    /**
+     * Read the excluded-words file from the vault and update settings.excludedWords.
+     * Format: one word per line. Leading "- " or "* " bullets are stripped.
+     * Lines starting with "#" are ignored (comments / markdown headers).
+     * Empty lines and YAML frontmatter are ignored.
+     */
+    async reloadExcludedWords() {
+        const path = this.settings.excludedWordsFile?.trim();
+        if (!path) {
+            if ((this.settings.excludedWords ?? []).length > 0) {
+                this.settings.excludedWords = [];
+                await this.saveData(this.settings);
+                this.updateManager.update();
+            }
+            return;
+        }
+
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) {
+            // File missing — clear the list (so removing the file disables exclusions).
+            if ((this.settings.excludedWords ?? []).length > 0) {
+                this.settings.excludedWords = [];
+                await this.saveData(this.settings);
+                this.updateManager.update();
+            }
+            return;
+        }
+
+        const raw = await this.app.vault.cachedRead(file);
+        const words = parseExcludedWords(raw);
+
+        // Avoid spurious cache invalidation if the list is unchanged.
+        const prev = this.settings.excludedWords ?? [];
+        if (prev.length === words.length && prev.every((w, i) => w === words[i])) return;
+
+        this.settings.excludedWords = words;
+        await this.saveData(this.settings);
+        this.updateManager.update();
+    }
+
+    async openOrCreateExcludedWordsFile() {
+        const path = this.settings.excludedWordsFile?.trim();
+        if (!path) return;
+
+        let file = this.app.vault.getAbstractFileByPath(path);
+        if (!file) {
+            const initial = '# Words to exclude from auto-linking, one per line.\n';
+            file = await this.app.vault.create(path, initial);
+        }
+        if (file instanceof TFile) {
+            await this.app.workspace.getLeaf(true).openFile(file);
+        }
+    }
+
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 
@@ -612,6 +618,39 @@ export default class LinkerPlugin extends Plugin {
         await this.saveData(this.settings);
         this.updateManager.update();
     }
+}
+
+/**
+ * Parse the contents of the excluded-words file.
+ * - Strips YAML frontmatter at the top of the file.
+ * - Treats lines starting with `#` as comments (also covers markdown headers).
+ * - Strips leading list bullets (`- `, `* `, `+ `).
+ * - Trims and filters empty lines.
+ * - Deduplicates while preserving order.
+ */
+export function parseExcludedWords(raw: string): string[] {
+    let body = raw;
+
+    // Strip YAML frontmatter if present.
+    if (body.startsWith('---\n')) {
+        const end = body.indexOf('\n---', 4);
+        if (end !== -1) {
+            body = body.slice(end + 4);
+        }
+    }
+
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const line of body.split('\n')) {
+        const stripped = line.replace(/^\s*[-*+]\s+/, '').trim();
+        if (!stripped) continue;
+        if (stripped.startsWith('#')) continue;
+        const key = stripped.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(stripped);
+    }
+    return result;
 }
 
 class LinkerSettingTab extends PluginSettingTab {
@@ -640,6 +679,67 @@ class LinkerSettingTab extends PluginSettingTab {
                 this.display();
             })
         );
+
+        new Setting(containerEl).setName('Auto-link').setHeading();
+
+        // Toggle to enable automatic real-link insertion while editing
+        new Setting(containerEl)
+            .setName('Auto-insert real links while editing')
+            .setDesc(
+                'If activated, matched terms outside the current line are automatically replaced with real wiki/markdown links after you stop typing. The current line is left untouched (IME-safe).'
+            )
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.autoLinkOnEdit).onChange(async (value) => {
+                    await this.plugin.updateSettings({ autoLinkOnEdit: value });
+                    this.display();
+                })
+            );
+
+        if (this.plugin.settings.autoLinkOnEdit && this.plugin.settings.advancedSettings) {
+            new Setting(containerEl)
+                .setName('Auto-link debounce (ms)')
+                .setDesc('Idle time after typing before auto-linking runs. Larger values are safer with IME but feel less responsive.')
+                .addText((text) =>
+                    text
+                        .setValue(String(this.plugin.settings.autoLinkDebounceMs))
+                        .onChange(async (value) => {
+                            let newValue = parseInt(value, 10);
+                            if (isNaN(newValue) || newValue < 100) {
+                                newValue = 100;
+                            } else if (newValue > 10000) {
+                                newValue = 10000;
+                            }
+                            await this.plugin.updateSettings({ autoLinkDebounceMs: newValue });
+                        })
+                );
+        }
+
+        if (this.plugin.settings.autoLinkOnEdit) {
+            const wordCount = (this.plugin.settings.excludedWords ?? []).length;
+            new Setting(containerEl)
+                .setName('Excluded words file')
+                .setDesc(
+                    `Vault-relative path to a markdown file listing words/phrases to never auto-link. One per line. Case-insensitive. Lines starting with "#" or "-" are treated as comments / list bullets and stripped. Currently loaded: ${wordCount} word(s).`
+                )
+                .addText((text) =>
+                    text
+                        .setPlaceholder('linker-exclude.md')
+                        .setValue(this.plugin.settings.excludedWordsFile)
+                        .onChange(async (value) => {
+                            await this.plugin.updateSettings({ excludedWordsFile: value.trim() });
+                            await this.plugin.reloadExcludedWords();
+                            this.display();
+                        })
+                )
+                .addExtraButton((btn) =>
+                    btn
+                        .setIcon('file-plus')
+                        .setTooltip('Open or create the exclude file')
+                        .onClick(async () => {
+                            await this.plugin.openOrCreateExcludedWordsFile();
+                        })
+                );
+        }
 
         new Setting(containerEl).setName('Matching behavior').setHeading();
 
