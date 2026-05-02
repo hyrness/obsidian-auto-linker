@@ -163,6 +163,14 @@ class AutoLinkerPlugin implements PluginValue {
             const currentText = view.state.doc.sliceString(cand.from, cand.to);
             if (currentText !== cand.displayText) continue;
 
+            // Defense against runaway re-linking when the syntax tree fails to
+            // flag an existing wiki/markdown link (e.g. inside an HTML wrapper).
+            // If the immediate surroundings already form a link, don't wrap again.
+            const before = view.state.doc.sliceString(Math.max(0, cand.from - 2), cand.from);
+            const after = view.state.doc.sliceString(cand.to, Math.min(docLength, cand.to + 2));
+            if (before.endsWith('[[') && after.startsWith(']]')) continue;
+            if (before.endsWith('[') && after.startsWith('](')) continue;
+
             const replacement = buildRealLinkReplacement(
                 this.app,
                 this.settings,
@@ -282,9 +290,14 @@ class AutoLinkerPlugin implements PluginValue {
             matches = VirtualMatch.sort(matches);
 
             // We want to exclude some syntax nodes from being decorated,
-            // such as code blocks and manually added links
+            // such as code blocks and manually added links.
+            //
+            // 'html'/'HTML' covers raw HTML/HTML-like tags such as <thinking> or <div>.
+            // Without these, the inner tag name gets auto-linked to a matching note,
+            // and Obsidian keeps parsing the wrapper as HTML even after the replacement,
+            // so each debounced flush nests the wikilink one level deeper — an infinite loop.
             const excludedIntervalTree = new IntervalTree();
-            const excludedTypes = ['codeblock', 'code-block', 'inline-code', 'internal-link', 'link', 'url', 'hashtag', 'formatting-list-ol'];
+            const excludedTypes = ['codeblock', 'code-block', 'inline-code', 'internal-link', 'link', 'url', 'hashtag', 'formatting-list-ol', 'hmd-html', 'html', 'HTML'];
 
             if (!this.settings.includeHeaders) {
                 excludedTypes.push('header-');
