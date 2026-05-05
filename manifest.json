@@ -1,9 +1,9 @@
 {
-	"id": "auto-real-linker",
-	"name": "Auto Real Linker",
-	"version": "1.5.4",
+	"id": "auto-linker",
+	"name": "Auto Linker",
+	"version": "2.0.0",
 	"minAppVersion": "1.5.0",
-	"description": "Automatically inserts real wiki/markdown links into your notes for text that matches the titles or aliases of other notes in your vault. Debounced and IME-safe (skips the current line).",
+	"description": "Automatically inserts wiki/markdown links into your notes for text that matches the titles or aliases of other notes in your vault. Debounced and IME-safe (skips the current line).",
 	"author": "hyrness",
 	"authorUrl": "https://github.com/hyrness/",
 	"isDesktopOnly": false

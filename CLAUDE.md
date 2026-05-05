@@ -1,4 +1,4 @@
-# real-link (Auto Real Linker) — project notes
+# real-link (Auto Linker) — project notes
 
 ## Dev loop
 
@@ -10,7 +10,7 @@ export OBSIDIAN_VAULT="$HOME/Vault"
 
 Then:
 
-- `npm run build:deploy` — runs the build and copies `main.js`, `manifest.json`, and `styles.css` into `$OBSIDIAN_VAULT/.obsidian/plugins/auto-real-linker/`. Use this during development. The script intentionally fails with a clear message if `OBSIDIAN_VAULT` is unset, so a fresh clone never silently copies into the wrong place.
+- `npm run build:deploy` — runs the build and copies `main.js`, `manifest.json`, and `styles.css` into `$OBSIDIAN_VAULT/.obsidian/plugins/auto-linker/`. Use this during development. The script intentionally fails with a clear message if `OBSIDIAN_VAULT` is unset, so a fresh clone never silently copies into the wrong place.
 - `npm run build` — pure build (no deploy). Used for CI and release packaging so a clone without the env var still builds.
 
 `data.json` (user settings) is never touched by the deploy step.

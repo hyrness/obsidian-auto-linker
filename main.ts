@@ -1,13 +1,12 @@
-import { App, EditorPosition, MarkdownView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { App, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder } from 'obsidian';
 
 import { liveLinkerPlugin } from './linker/liveLinker';
 import { ExternalUpdateManager, LinkerCache } from 'linker/linkerCache';
-import { buildRealLinkReplacement, LinkerMetaInfoFetcher } from 'linker/linkerInfo';
+import { LinkerMetaInfoFetcher } from 'linker/linkerInfo';
 
 export interface LinkerPluginSettings {
     advancedSettings: boolean;
     linkerActivated: boolean;
-    suppressSuffixForSubWords: boolean;
     matchAnyPartsOfWords: boolean;
     matchEndOfWords: boolean;
     matchBeginningOfWords: boolean;
@@ -15,14 +14,11 @@ export interface LinkerPluginSettings {
     linkerDirectories: string[];
     excludedDirectories: string[];
     excludedDirectoriesForLinking: string[];
-    virtualLinkSuffix: string;
-    virtualLinkAliasSuffix: string;
     useDefaultLinkStyleForConversion: boolean;
     defaultUseMarkdownLinks: boolean; // Otherwise wiki links
     defaultLinkFormat: 'shortest' | 'relative' | 'absolute';
     useMarkdownLinks: boolean;
     linkFormat: 'shortest' | 'relative' | 'absolute';
-    applyDefaultLinkStyling: boolean;
     includeHeaders: boolean;
     matchCaseSensitive: boolean;
     capitalLetterProportionForAutomaticMatchCase: number;
@@ -39,7 +35,6 @@ export interface LinkerPluginSettings {
     excludeLinksToRealLinkedFiles: boolean;
     includeAliases: boolean;
     minimumLinkLength: number;
-    alwaysShowMultipleReferences: boolean;
     autoLinkOnEdit: boolean;
     autoLinkDebounceMs: number;
     /** Vault-relative path to a markdown file containing words to exclude from auto-linking, one per line. */
@@ -56,19 +51,15 @@ const DEFAULT_SETTINGS: LinkerPluginSettings = {
     matchAnyPartsOfWords: false,
     matchEndOfWords: true,
     matchBeginningOfWords: true,
-    suppressSuffixForSubWords: false,
     includeAllFiles: true,
     linkerDirectories: ['Glossary'],
     excludedDirectories: [],
     excludedDirectoriesForLinking: [],
-    virtualLinkSuffix: '🔗',
-    virtualLinkAliasSuffix: '🔗',
     useMarkdownLinks: false,
     linkFormat: 'shortest',
     defaultUseMarkdownLinks: false,
     defaultLinkFormat: 'shortest',
     useDefaultLinkStyleForConversion: true,
-    applyDefaultLinkStyling: true,
     includeHeaders: true,
     matchCaseSensitive: false,
     // > 1.0 disables auto-case-sensitivity entirely (all names match case-insensitively).
@@ -88,7 +79,6 @@ const DEFAULT_SETTINGS: LinkerPluginSettings = {
     excludeLinksToRealLinkedFiles: false,
     includeAliases: true,
     minimumLinkLength: 2,
-    alwaysShowMultipleReferences: false,
     autoLinkOnEdit: true,
     autoLinkDebounceMs: 300,
     excludedWordsFile: 'linker-exclude.md',
@@ -153,12 +143,12 @@ export default class LinkerPlugin extends Plugin {
         // This adds a settings tab so the user can configure various aspects of the plugin
         this.addSettingTab(new LinkerSettingTab(this.app, this));
 
-        // Context menu item to convert virtual links to real links
+        // Context menu items to include/exclude files & directories from auto-linking.
         this.registerEvent(this.app.workspace.on('file-menu', (menu, file, source) => this.addContextMenuItem(menu, file, source)));
 
         this.addCommand({
-            id: 'activate-virtual-linker',
-            name: 'Activate Auto Real Linker',
+            id: 'activate-auto-linker',
+            name: 'Activate Auto Linker',
             checkCallback: (checking) => {
                 if (!this.settings.linkerActivated) {
                     if (!checking) {
@@ -172,8 +162,8 @@ export default class LinkerPlugin extends Plugin {
         });
 
         this.addCommand({
-            id: 'deactivate-virtual-linker',
-            name: 'Deactivate Auto Real Linker',
+            id: 'deactivate-auto-linker',
+            name: 'Deactivate Auto Linker',
             checkCallback: (checking) => {
                 if (this.settings.linkerActivated) {
                     if (!checking) {
@@ -218,96 +208,6 @@ export default class LinkerPlugin extends Plugin {
                 }).open();
             },
         });
-
-        this.addCommand({
-            id: 'convert-selected-virtual-links',
-            name: 'Convert All Virtual Links in Selection to Real Links',
-            checkCallback: (checking: boolean) => {
-                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                const editor = view?.editor;
-
-                if (!editor || !editor.somethingSelected()) {
-                    return false;
-                }
-
-                if (checking) return true;
-
-                // Get the selected text range
-                const from = editor.getCursor('from');
-                const to = editor.getCursor('to');
-
-                // Get the DOM element containing the selection
-                const cmEditor = (editor as any).cm;
-                if (!cmEditor) return false;
-
-                const selectionRange = cmEditor.dom.querySelector('.cm-content');
-                if (!selectionRange) return false;
-
-                // Find all virtual links in the selection
-                const virtualLinks = Array.from(selectionRange.querySelectorAll('.virtual-link-a'))
-                    .filter((link): link is HTMLElement => link instanceof HTMLElement)
-                    .map(link => ({
-                        element: link,
-                        from: parseInt(link.getAttribute('from') || '-1'),
-                        to: parseInt(link.getAttribute('to') || '-1'),
-                        text: link.getAttribute('origin-text') || '',
-                        href: link.getAttribute('href') || ''
-                    }))
-                    .filter(link => {
-                        const linkFrom = editor.offsetToPos(link.from);
-                        const linkTo = editor.offsetToPos(link.to);
-                        return this.isPosWithinRange(linkFrom, linkTo, from, to);
-                    })
-                    .sort((a, b) => a.from - b.from);
-
-                if (virtualLinks.length === 0) return;
-
-                // Process all links in a single operation
-                const replacements: {from: number, to: number, text: string}[] = [];
-
-                for (const link of virtualLinks) {
-                    const targetFile = this.app.vault.getAbstractFileByPath(link.href);
-                    if (!(targetFile instanceof TFile)) continue;
-
-                    const activeFilePath = this.app.workspace.getActiveFile()?.path ?? '';
-                    const replacement = buildRealLinkReplacement(
-                        this.app,
-                        this.settings,
-                        targetFile,
-                        link.text,
-                        activeFilePath,
-                    );
-
-                    replacements.push({
-                        from: link.from,
-                        to: link.to,
-                        text: replacement,
-                    });
-                }
-
-                // Apply all replacements in reverse order to maintain correct positions
-                for (const replacement of replacements.reverse()) {
-                    const fromPos = editor.offsetToPos(replacement.from);
-                    const toPos = editor.offsetToPos(replacement.to);
-                    editor.replaceRange(replacement.text, fromPos, toPos);
-                }
-            }
-        });
-
-    }
-
-    private isPosWithinRange(
-        linkFrom: EditorPosition,
-        linkTo: EditorPosition,
-        selectionFrom: EditorPosition,
-        selectionTo: EditorPosition
-    ): boolean {
-        return (
-            (linkFrom.line > selectionFrom.line ||
-             (linkFrom.line === selectionFrom.line && linkFrom.ch >= selectionFrom.ch)) &&
-            (linkTo.line < selectionTo.line ||
-             (linkTo.line === selectionTo.line && linkTo.ch <= selectionTo.ch))
-        );
     }
 
     addContextMenuItem(menu: Menu, file: TAbstractFile, source: string) {
@@ -333,86 +233,11 @@ export default class LinkerPlugin extends Plugin {
         if (!isDirectory) {
             const metaInfo = fetcher.getMetaInfo(file);
 
-            function contextMenuHandler(event: MouseEvent) {
-                // Access the element that triggered the context menu
-                const targetElement = event.target;
-
-                if (!targetElement || !(targetElement instanceof HTMLElement)) {
-                    console.error('No target element');
-                    return;
-                }
-
-                // Check, if we are clicking on a virtual link inside a note or a note in the file explorer
-                const isVirtualLink = targetElement.classList.contains('virtual-link-a');
-
-                const from = parseInt(targetElement.getAttribute('from') || '-1');
-                const to = parseInt(targetElement.getAttribute('to') || '-1');
-
-                if (from === -1 || to === -1) {
-                    menu.addItem((item) => {
-                        // Item to convert a virtual link to a real link
-                        item.setTitle(
-                            '[Auto Real Linker] Converting link is not here.'
-                        ).setIcon('link');
-                    });
-                }
-                // Check, if the element has the "virtual-link" class
-                else if (isVirtualLink) {
-                    menu.addItem((item) => {
-                        // Item to convert a virtual link to a real link
-                        item.setTitle('[Auto Real Linker] Convert to real link')
-                            .setIcon('link')
-                            .onClick(() => {
-                                // Get from and to position from the element
-                                const from = parseInt(targetElement.getAttribute('from') || '-1');
-                                const to = parseInt(targetElement.getAttribute('to') || '-1');
-
-                                if (from === -1 || to === -1) {
-                                    console.error('No from or to position');
-                                    return;
-                                }
-
-                                // Get the shown text
-                                const text = targetElement.getAttribute('origin-text') || '';
-                                const activeFile = app.workspace.getActiveFile();
-
-                                if (!activeFile) {
-                                    console.error('No active file');
-                                    return;
-                                }
-
-                                const replacement = buildRealLinkReplacement(
-                                    app,
-                                    settings,
-                                    file as TFile,
-                                    text,
-                                    activeFile.path,
-                                );
-
-                                // Replace the text
-                                const editor = app.workspace.getActiveViewOfType(MarkdownView)?.editor;
-                                const fromEditorPos = editor?.offsetToPos(from);
-                                const toEditorPos = editor?.offsetToPos(to);
-
-                                if (!fromEditorPos || !toEditorPos) {
-                                    console.warn('No editor positions');
-                                    return;
-                                }
-
-                                editor?.replaceRange(replacement, fromEditorPos, toEditorPos);
-                            });
-                    });
-                }
-
-                // Remove the listener to prevent multiple triggers
-                document.removeEventListener('contextmenu', contextMenuHandler);
-            }
-
             if (!metaInfo.excludeFile && (metaInfo.includeAllFiles || metaInfo.includeFile || metaInfo.isInIncludedDir)) {
-                // Item to exclude a virtual link from the linker
-                // This action adds the settings.tagToExcludeFile to the file
+                // Item to exclude this file from auto-linking.
+                // Adds settings.tagToExcludeFile to the file's frontmatter.
                 menu.addItem((item) => {
-                    item.setTitle('[Auto Real Linker] Exclude this file')
+                    item.setTitle('[Auto Linker] Exclude this file')
                         .setIcon('trash')
                         .onClick(async () => {
                             // Get the shown text
@@ -462,10 +287,10 @@ export default class LinkerPlugin extends Plugin {
                         });
                 });
             } else if (!metaInfo.includeFile && (!metaInfo.includeAllFiles || metaInfo.excludeFile || metaInfo.isInExcludedDir)) {
-                //Item to include a virtual link from the linker
-                // This action adds the settings.tagToIncludeFile to the file
+                // Item to include this file in auto-linking.
+                // Adds settings.tagToIncludeFile to the file's frontmatter.
                 menu.addItem((item) => {
-                    item.setTitle('[Auto Real Linker] Include this file')
+                    item.setTitle('[Auto Linker] Include this file')
                         .setIcon('plus')
                         .onClick(async () => {
                             // Get the shown text
@@ -516,8 +341,6 @@ export default class LinkerPlugin extends Plugin {
                 });
             }
 
-            // Capture the MouseEvent when the context menu is triggered
-            document.addEventListener('contextmenu', contextMenuHandler, { once: true });
         } else {
             // Check if the directory is in the linker directories
             const path = file.path + '/';
@@ -527,7 +350,7 @@ export default class LinkerPlugin extends Plugin {
             // If the directory is in the linker directories, add the option to exclude it
             if ((fetcher.includeAllFiles && !isInExcludedDir) || isInIncludedDir) {
                 menu.addItem((item) => {
-                    item.setTitle('[Auto Real Linker] Exclude this directory')
+                    item.setTitle('[Auto Linker] Exclude this directory')
                         .setIcon('trash')
                         .onClick(async () => {
                             // Get the shown text
@@ -551,7 +374,7 @@ export default class LinkerPlugin extends Plugin {
             } else if ((!fetcher.includeAllFiles && !isInIncludedDir) || isInExcludedDir) {
                 // If the directory is in the excluded directories, add the option to include it
                 menu.addItem((item) => {
-                    item.setTitle('[Auto Real Linker] Include this directory')
+                    item.setTitle('[Auto Linker] Include this directory')
                         .setIcon('plus')
                         .onClick(async () => {
                             // Get the shown text
@@ -870,7 +693,7 @@ class LinkerSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         // Toggle to activate or deactivate the linker
-        new Setting(containerEl).setName('Activate Auto Real Linker').addToggle((toggle) =>
+        new Setting(containerEl).setName('Activate Auto Linker').addToggle((toggle) =>
             toggle.setValue(this.plugin.settings.linkerActivated).onChange(async (value) => {
                 // console.log("Linker activated: " + value);
                 await this.plugin.updateSettings({ linkerActivated: value });
@@ -890,9 +713,9 @@ class LinkerSettingTab extends PluginSettingTab {
 
         // Toggle to enable automatic real-link insertion while editing
         new Setting(containerEl)
-            .setName('Auto-insert real links while editing')
+            .setName('Auto-insert links while editing')
             .setDesc(
-                'If activated, matched terms outside the current line are automatically replaced with real wiki/markdown links after you stop typing. The current line is left untouched (IME-safe).'
+                'If activated, matched terms outside the current line are automatically replaced with wiki/markdown links after you stop typing. The current line is left untouched (IME-safe).'
             )
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.autoLinkOnEdit).onChange(async (value) => {
@@ -990,8 +813,8 @@ class LinkerSettingTab extends PluginSettingTab {
 
             // Toggle to exclude links to real linked files
             new Setting(containerEl)
-                .setName('Exclude links to real linked files')
-                .setDesc('If activated, there will be no links to files that are already linked in the note by real links.')
+                .setName('Exclude links to already-linked files')
+                .setDesc('If activated, there will be no auto-links to files that are already linked in the note.')
                 .addToggle((toggle) =>
                     toggle.setValue(this.plugin.settings.excludeLinksToRealLinkedFiles).onChange(async (value) => {
                         // console.log("Exclude links to real linked files: " + value);
@@ -1045,19 +868,6 @@ class LinkerSettingTab extends PluginSettingTab {
                         // console.log("Match only end of words: " + value);
                         await this.plugin.updateSettings({ matchEndOfWords: value });
                         this.display();
-                    })
-                );
-        }
-
-        // Toggle setting to suppress suffix for sub words
-        if (this.plugin.settings.matchAnyPartsOfWords || this.plugin.settings.matchBeginningOfWords) {
-            new Setting(containerEl)
-                .setName('Suppress suffix for sub words')
-                .setDesc('If activated, the suffix is not added to links for subwords, but only for complete matches.')
-                .addToggle((toggle) =>
-                    toggle.setValue(this.plugin.settings.suppressSuffixForSubWords).onChange(async (value) => {
-                        // console.log("Suppress suffix for sub words: " + value);
-                        await this.plugin.updateSettings({ suppressSuffixForSubWords: value });
                     })
                 );
         }
@@ -1335,52 +1145,10 @@ class LinkerSettingTab extends PluginSettingTab {
 
         new Setting(containerEl).setName('Link style').setHeading();
 
-        new Setting(containerEl)
-            .setName('Always show multiple references')
-            .setDesc('If toggled, if there are multiple matching notes, all references are shown behind the match. If not toggled, the references are only shown if hovering over the match.')
-            .addToggle((toggle) =>
-                toggle.setValue(this.plugin.settings.alwaysShowMultipleReferences).onChange(async (value) => {
-                    // console.log("Always show multiple references: " + value);
-                    await this.plugin.updateSettings({ alwaysShowMultipleReferences: value });
-                })
-            );
-
-        new Setting(containerEl)
-            .setName('Auto-link suffix')
-            .setDesc('The suffix to add to auto-generated links.')
-            .addText((text) =>
-                text.setValue(this.plugin.settings.virtualLinkSuffix).onChange(async (value) => {
-                    // console.log("New glossary suffix: " + value);
-                    await this.plugin.updateSettings({ virtualLinkSuffix: value });
-                })
-            );
-        new Setting(containerEl)
-            .setName('Auto-link suffix for aliases')
-            .setDesc('The suffix to add to auto-generated links for aliases.')
-            .addText((text) =>
-                text.setValue(this.plugin.settings.virtualLinkAliasSuffix).onChange(async (value) => {
-                    // console.log("New glossary suffix: " + value);
-                    await this.plugin.updateSettings({ virtualLinkAliasSuffix: value });
-                })
-            );
-
-        // Toggle setting to apply default link styling
-        new Setting(containerEl)
-            .setName('Apply default link styling')
-            .setDesc(
-                'If toggled, the default link styling will be applied to auto-inserted links. Furthermore, you can style the links yourself with a CSS-snippet affecting the class `virtual-link`. (Find the CSS snippet directory at Appearance -> CSS Snippets -> Open snippets folder)'
-            )
-            .addToggle((toggle) =>
-                toggle.setValue(this.plugin.settings.applyDefaultLinkStyling).onChange(async (value) => {
-                    // console.log("Apply default link styling: " + value);
-                    await this.plugin.updateSettings({ applyDefaultLinkStyling: value });
-                })
-            );
-
         // Toggle setting to use default link style for conversion
         new Setting(containerEl)
             .setName('Use default link style for conversion')
-            .setDesc('If toggled, the default link style will be used for the conversion of auto-link suggestions to real links.')
+            .setDesc('If toggled, the auto-linker uses the vault default link style (wiki vs. markdown, link format) when inserting links. Untoggle to override with the settings below.')
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.useDefaultLinkStyleForConversion).onChange(async (value) => {
                     // console.log("Use default link style for conversion: " + value);

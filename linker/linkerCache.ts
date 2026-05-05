@@ -188,7 +188,7 @@ export class PrefixTree {
         this.setIndexedFilePaths.add(path);
         this.mapIndexedFilePathsToUpdateTime.set(path, file.stat.mtime);
 
-        // Get the virtual linker related metadata of the file
+        // Get the auto-linker related metadata of the file
         const metaInfo = this.fetcher.getMetaInfo(file);
 
         // Get the tags of the file

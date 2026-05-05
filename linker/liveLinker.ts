@@ -1,6 +1,6 @@
 import { syntaxTree } from '@codemirror/language';
 import { RangeSetBuilder } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, PluginSpec, PluginValue, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
+import { Decoration, DecorationSet, EditorView, PluginSpec, PluginValue, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { App, MarkdownView, TFile, Vault } from 'obsidian';
 
 import IntervalTree from '@flatten-js/interval-tree';
@@ -27,15 +27,6 @@ function isDescendant(parent: HTMLElement, child: HTMLElement, maxDepth: number 
         depth++;
     }
     return false;
-}
-
-export class VirtualLinkWidget extends WidgetType {
-    constructor(public match: VirtualMatch) {
-        super();
-    }
-    toDOM(view: EditorView): HTMLElement {
-        return this.match.getCompleteLinkElement();
-    }
 }
 
 class AutoLinkerPlugin implements PluginValue {
@@ -232,7 +223,7 @@ class AutoLinkerPlugin implements PluginValue {
         // Set to exclude file that are explicitly linked
         const explicitlyLinkedFiles = new Set<TFile>();
 
-        // Set to exclude files that are already linked by a virtual link
+        // Set to exclude files that are already linked by a candidate match.
         const alreadyLinkedFiles = new Set<TFile>();
 
         for (let { from, to } of view.visibleRanges) {
@@ -240,7 +231,6 @@ class AutoLinkerPlugin implements PluginValue {
             const text = view.state.doc.sliceString(from, to);
 
             // For every glossary file and its aliases we now search the text for occurrences
-            // const additions: { id: number; files: TFile[]; from: number; to: number; widget: WidgetType }[] = [];
             let matches: VirtualMatch[] = [];
             let id = 0;
             let prevChar: string | undefined = undefined;
@@ -282,7 +272,7 @@ class AutoLinkerPlugin implements PluginValue {
                             // console.log("MATCH", name, aFrom, aTo, node.caseIsMatched, node.requiresCaseMatch)
 
                             matches.push(
-                                new VirtualMatch(id++, name, aFrom, aTo, Array.from(node.files), isAlias, !isWordBoundary, this.settings)
+                                new VirtualMatch(id++, name, aFrom, aTo, Array.from(node.files), isAlias, !isWordBoundary)
                             );
                         }
                     }
@@ -361,7 +351,7 @@ class AutoLinkerPlugin implements PluginValue {
             // Additions are sorted by from position and after that by length, we want to keep longer additions
             matches = VirtualMatch.filterOverlapping(matches, this.settings.onlyLinkOnce, excludedIntervalTree);
 
-            // Store the files that are linked by a virtual link
+            // Store the files that are linked by a candidate match.
             matches.forEach((addition) => addition.files.forEach((f) => alreadyLinkedFiles.add(f)));
 
             // Get the cursor position
