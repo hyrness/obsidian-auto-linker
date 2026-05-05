@@ -158,7 +158,7 @@ export default class LinkerPlugin extends Plugin {
 
         this.addCommand({
             id: 'activate-virtual-linker',
-            name: 'Activate Virtual Linker',
+            name: 'Activate Auto Real Linker',
             checkCallback: (checking) => {
                 if (!this.settings.linkerActivated) {
                     if (!checking) {
@@ -173,7 +173,7 @@ export default class LinkerPlugin extends Plugin {
 
         this.addCommand({
             id: 'deactivate-virtual-linker',
-            name: 'Deactivate Virtual Linker',
+            name: 'Deactivate Auto Real Linker',
             checkCallback: (checking) => {
                 if (this.settings.linkerActivated) {
                     if (!checking) {
@@ -352,7 +352,7 @@ export default class LinkerPlugin extends Plugin {
                     menu.addItem((item) => {
                         // Item to convert a virtual link to a real link
                         item.setTitle(
-                            '[Virtual Linker] Converting link is not here.'
+                            '[Auto Real Linker] Converting link is not here.'
                         ).setIcon('link');
                     });
                 }
@@ -360,7 +360,7 @@ export default class LinkerPlugin extends Plugin {
                 else if (isVirtualLink) {
                     menu.addItem((item) => {
                         // Item to convert a virtual link to a real link
-                        item.setTitle('[Virtual Linker] Convert to real link')
+                        item.setTitle('[Auto Real Linker] Convert to real link')
                             .setIcon('link')
                             .onClick(() => {
                                 // Get from and to position from the element
@@ -412,7 +412,7 @@ export default class LinkerPlugin extends Plugin {
                 // Item to exclude a virtual link from the linker
                 // This action adds the settings.tagToExcludeFile to the file
                 menu.addItem((item) => {
-                    item.setTitle('[Virtual Linker] Exclude this file')
+                    item.setTitle('[Auto Real Linker] Exclude this file')
                         .setIcon('trash')
                         .onClick(async () => {
                             // Get the shown text
@@ -465,7 +465,7 @@ export default class LinkerPlugin extends Plugin {
                 //Item to include a virtual link from the linker
                 // This action adds the settings.tagToIncludeFile to the file
                 menu.addItem((item) => {
-                    item.setTitle('[Virtual Linker] Include this file')
+                    item.setTitle('[Auto Real Linker] Include this file')
                         .setIcon('plus')
                         .onClick(async () => {
                             // Get the shown text
@@ -527,7 +527,7 @@ export default class LinkerPlugin extends Plugin {
             // If the directory is in the linker directories, add the option to exclude it
             if ((fetcher.includeAllFiles && !isInExcludedDir) || isInIncludedDir) {
                 menu.addItem((item) => {
-                    item.setTitle('[Virtual Linker] Exclude this directory')
+                    item.setTitle('[Auto Real Linker] Exclude this directory')
                         .setIcon('trash')
                         .onClick(async () => {
                             // Get the shown text
@@ -551,7 +551,7 @@ export default class LinkerPlugin extends Plugin {
             } else if ((!fetcher.includeAllFiles && !isInIncludedDir) || isInExcludedDir) {
                 // If the directory is in the excluded directories, add the option to include it
                 menu.addItem((item) => {
-                    item.setTitle('[Virtual Linker] Include this directory')
+                    item.setTitle('[Auto Real Linker] Include this directory')
                         .setIcon('plus')
                         .onClick(async () => {
                             // Get the shown text
@@ -870,7 +870,7 @@ class LinkerSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         // Toggle to activate or deactivate the linker
-        new Setting(containerEl).setName('Activate Virtual Linker').addToggle((toggle) =>
+        new Setting(containerEl).setName('Activate Auto Real Linker').addToggle((toggle) =>
             toggle.setValue(this.plugin.settings.linkerActivated).onChange(async (value) => {
                 // console.log("Linker activated: " + value);
                 await this.plugin.updateSettings({ linkerActivated: value });
@@ -952,7 +952,7 @@ class LinkerSettingTab extends PluginSettingTab {
         // Toggle to include aliases
         new Setting(containerEl)
             .setName('Include aliases')
-            .setDesc('If activated, the virtual linker will also include aliases for the files.')
+            .setDesc('If activated, the auto-linker will also include aliases for the files.')
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.includeAliases).onChange(async (value) => {
                     // console.log("Include aliases: " + value);
@@ -980,7 +980,7 @@ class LinkerSettingTab extends PluginSettingTab {
             // Toggle to only link once
             new Setting(containerEl)
                 .setName('Only link once')
-                .setDesc('If activated, there will not be several identical virtual links in the same note (Wikipedia style).')
+                .setDesc('If activated, there will not be several identical auto-links in the same note (Wikipedia style).')
                 .addToggle((toggle) =>
                     toggle.setValue(this.plugin.settings.onlyLinkOnce).onChange(async (value) => {
                         // console.log("Only link once: " + value);
@@ -1003,7 +1003,7 @@ class LinkerSettingTab extends PluginSettingTab {
         // If headers should be matched or not
         new Setting(containerEl)
             .setName('Include headers')
-            .setDesc('If activated, headers (so your lines beginning with at least one `#`) are included for virtual links.')
+            .setDesc('If activated, headers (so your lines beginning with at least one `#`) are included for auto-linking.')
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.includeHeaders).onChange(async (value) => {
                     // console.log("Include headers: " + value);
@@ -1201,7 +1201,7 @@ class LinkerSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('Include all files')
-            .setDesc('Include all files for the virtual linker.')
+            .setDesc('Include all files for the auto-linker.')
             .addToggle((toggle) =>
                 toggle
                     // .setValue(true)
@@ -1216,7 +1216,7 @@ class LinkerSettingTab extends PluginSettingTab {
         if (!this.plugin.settings.includeAllFiles) {
             new Setting(containerEl)
                 .setName('Glossary linker directories')
-                .setDesc('Directories to include for the virtual linker (separated by new lines).')
+                .setDesc('Directories to include for the auto-linker (separated by new lines).')
                 .addTextArea((text) => {
                     let setValue = '';
                     try {
@@ -1244,7 +1244,7 @@ class LinkerSettingTab extends PluginSettingTab {
                 new Setting(containerEl)
                     .setName('Excluded directories')
                     .setDesc(
-                        'Directories from which files are to be excluded for the virtual linker (separated by new lines). Files in these directories will not create any virtual links in other files.'
+                        'Directories from which files are to be excluded for the auto-linker (separated by new lines). Files in these directories will not create any auto-links in other files.'
                     )
                     .addTextArea((text) => {
                         let setValue = '';
@@ -1307,8 +1307,8 @@ class LinkerSettingTab extends PluginSettingTab {
 
             // Setting to exclude directories from the linker to be executed
             new Setting(containerEl)
-                .setName('Excluded directories for generating virtual links')
-                .setDesc('Directories in which the plugin will not create virtual links (separated by new lines).')
+                .setName('Excluded directories for generating auto-links')
+                .setDesc('Directories in which the plugin will not create auto-links (separated by new lines).')
                 .addTextArea((text) => {
                     let setValue = '';
                     try {
@@ -1346,8 +1346,8 @@ class LinkerSettingTab extends PluginSettingTab {
             );
 
         new Setting(containerEl)
-            .setName('Virtual link suffix')
-            .setDesc('The suffix to add to auto generated virtual links.')
+            .setName('Auto-link suffix')
+            .setDesc('The suffix to add to auto-generated links.')
             .addText((text) =>
                 text.setValue(this.plugin.settings.virtualLinkSuffix).onChange(async (value) => {
                     // console.log("New glossary suffix: " + value);
@@ -1355,8 +1355,8 @@ class LinkerSettingTab extends PluginSettingTab {
                 })
             );
         new Setting(containerEl)
-            .setName('Virtual link suffix for aliases')
-            .setDesc('The suffix to add to auto generated virtual links for aliases.')
+            .setName('Auto-link suffix for aliases')
+            .setDesc('The suffix to add to auto-generated links for aliases.')
             .addText((text) =>
                 text.setValue(this.plugin.settings.virtualLinkAliasSuffix).onChange(async (value) => {
                     // console.log("New glossary suffix: " + value);
@@ -1368,7 +1368,7 @@ class LinkerSettingTab extends PluginSettingTab {
         new Setting(containerEl)
             .setName('Apply default link styling')
             .setDesc(
-                'If toggled, the default link styling will be applied to virtual links. Furthermore, you can style the links yourself with a CSS-snippet affecting the class `virtual-link`. (Find the CSS snippet directory at Appearance -> CSS Snippets -> Open snippets folder)'
+                'If toggled, the default link styling will be applied to auto-inserted links. Furthermore, you can style the links yourself with a CSS-snippet affecting the class `virtual-link`. (Find the CSS snippet directory at Appearance -> CSS Snippets -> Open snippets folder)'
             )
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.applyDefaultLinkStyling).onChange(async (value) => {
@@ -1380,7 +1380,7 @@ class LinkerSettingTab extends PluginSettingTab {
         // Toggle setting to use default link style for conversion
         new Setting(containerEl)
             .setName('Use default link style for conversion')
-            .setDesc('If toggled, the default link style will be used for the conversion of virtual links to real links.')
+            .setDesc('If toggled, the default link style will be used for the conversion of auto-link suggestions to real links.')
             .addToggle((toggle) =>
                 toggle.setValue(this.plugin.settings.useDefaultLinkStyleForConversion).onChange(async (value) => {
                     // console.log("Use default link style for conversion: " + value);
@@ -1393,7 +1393,7 @@ class LinkerSettingTab extends PluginSettingTab {
             // Toggle setting to use markdown links
             new Setting(containerEl)
                 .setName('Use [[Wiki-links]]')
-                .setDesc('If toggled, the virtual links will be created as wiki-links instead of markdown links.')
+                .setDesc('If toggled, the auto-links will be created as wiki-links instead of markdown links.')
                 .addToggle((toggle) =>
                     toggle.setValue(!this.plugin.settings.useMarkdownLinks).onChange(async (value) => {
                         // console.log("Use markdown links: " + value);
