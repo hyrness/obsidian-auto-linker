@@ -8,6 +8,7 @@ import { LinkerPluginSettings } from 'main';
 import { ExternalUpdateManager, LinkerCache, PrefixTree } from './linkerCache';
 import { VirtualMatch } from './virtualLinkDom';
 import { buildRealLinkReplacement } from './linkerInfo';
+import { findHtmlCommentRanges } from './htmlComments';
 
 interface AutoLinkCandidate {
     from: number;
@@ -297,6 +298,16 @@ class AutoLinkerPlugin implements PluginValue {
             // so each debounced flush nests the wikilink one level deeper — an infinite loop.
             const excludedIntervalTree = new IntervalTree();
             const excludedTypes = ['codeblock', 'code-block', 'inline-code', 'internal-link', 'link', 'url', 'hashtag', 'formatting-list-ol', 'hmd-html', 'html', 'HTML'];
+
+            // HTML comments (`<!-- ... -->`) sometimes evade the syntax-tree-based
+            // exclusion above — particularly while the closing `-->` is still being
+            // typed, where the parser may not yet flag the region as HTML. Detect
+            // them directly from the text as a safety net. Per CommonMark, an
+            // unclosed `<!--` extends to end-of-input, so we exclude that whole tail
+            // until the user types the closing `-->`.
+            for (const [cStart, cEnd] of findHtmlCommentRanges(text)) {
+                excludedIntervalTree.insert([from + cStart, from + cEnd]);
+            }
 
             if (!this.settings.includeHeaders) {
                 excludedTypes.push('header-');
